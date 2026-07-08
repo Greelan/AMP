@@ -136,6 +136,7 @@ JAVA_PACKAGES="temurin-8-jdk temurin-11-jdk temurin-17-jdk temurin-21-jdk temuri
 HAS_NATIVE_32BIT=1
 PODMAN_CHECK=0
 NEED_GROUP=false
+PIP_CERTBOT_PACKAGES="certbot certbot-nginx"
 
 echo " - Checking environment..."
 if [[ $EUID -ne 0 ]]; then
@@ -213,7 +214,7 @@ if [ "$APT_IS_PRESENT" ]; then
 	PM_COMMAND=apt-get
 	PM_INSTALL=(install -y)
 	PM_UNINSTALL=(remove -y)
-	CERTBOT_PACKAGE=python3-certbot-nginx
+	CERTBOT_PACKAGES="certbot python3-certbot-nginx"
 	LIB32_PACKAGES="libgcc-s1:i386 libstdc++6:i386 zlib1g:i386 libncurses5:i386 libbz2-1.0:i386 libtinfo5:i386 libcurl3-gnutls:i386 libsdl2-2.0-0:i386"
 	PREREQ_PACKAGES="dirmngr software-properties-common apt-transport-https gpg-agent dnsutils jq git unzip wget gpg qrencode ca-certificates"
 	# If we're on Ubuntu 24.04 or newer: 
@@ -244,14 +245,14 @@ elif [ "$TDNF_IS_PRESENT" ]; then
 	PM_UNINSTALL=(-y remove)
 	PM_LOCK_FILE="/var/run/tdnf.pid"
 	INSTALL_IN_PROGRESS=$(isFileOpen $PM_LOCK_FILE)
-	CERTBOT_PACKAGE=certbot-nginx
+	CERTBOT_PACKAGES="certbot certbot-nginx"
 elif [ "$YUM_IS_PRESENT" ]; then
 	PM_COMMAND=yum
 	PM_INSTALL=(-y install)
 	PM_UNINSTALL=(-y remove)
 	LIB32_PACKAGES="glibc.i686 libstdc++.i686 ncurses-libs.i686"
 	PREREQ_PACKAGES="wget tmux socat unzip git bind-utils tar jq qrencode libicu"
-	CERTBOT_PACKAGE=python3-certbot-nginx
+	CERTBOT_PACKAGES="certbot python3-certbot-nginx"
 	PM_LOCK_FILE="/var/run/yum.pid"
 	INSTALL_IN_PROGRESS=$(isFileOpen $PM_LOCK_FILE)
 	PODMAN_PACKAGES="crun podman shadow-utils"
@@ -260,7 +261,7 @@ elif [ "$PACMAN_IS_PRESENT" ]; then
 	PM_INSTALL=(-S --noconfirm)
 	LIB32_PACKAGES="lib32-glibc lib32-gcc-libs"
 	PREREQ_PACKAGES="wget tmux socat unzip git dnsutils tar jq qrencode"
-	CERTBOT_PACKAGE=certbot-nginx
+	CERTBOT_PACKAGES="certbot certbot-nginx"
 	JAVA_PACKAGES="jre8-openjdk-headless jre11-openjdk-headless jre17-openjdk-headless jre21-openjdk-headless jre-openjdk-headless"
 
 	if [ "$ARCH" != "x86_64" ]; then
@@ -274,7 +275,7 @@ elif [ "$ZYPPER_IS_PRESENT" ]; then
     PM_UNINSTALL=(remove -y)
     LIB32_PACKAGES="glibc-32bit libstdc++6-32bit"
     PREREQ_PACKAGES="wget tmux socat unzip git bind-utils tar jq qrencode libicu"
-    CERTBOT_PACKAGE=python3-certbot-nginx
+    CERTBOT_PACKAGES="python3-certbot python3-certbot-nginx"
     PM_LOCK_FILE="/var/run/zypp.pid"
     INSTALL_IN_PROGRESS=$(isFileOpen $PM_LOCK_FILE)
 	PODMAN_PACKAGES="crun podman shadow"
@@ -1071,7 +1072,7 @@ function installDocker {
         *) ;;
     esac
 
-	if [[ ! $DOCKER_REPO_AVAILABLE ]]; then
+	if ! $DOCKER_REPO_AVAILABLE; then
 		if [[ "$DOCKER_IS_INSTALLED" ]]; then
 			echo "Automatic Docker re-installation is not supported on your system at this time. After setup completes, please investigate using your current Docker installation with AMP, and if necessary re-installing Docker manually from the official Docker sources. See https://docs.docker.com/engine/install/ for more information. If you re-install Docker manually, also ensure that the '$AMP_SYS_USER' user is in the 'docker' group."
 			echo "Continuing without re-installing Docker..."
@@ -1135,16 +1136,22 @@ function installNginx {
 	  	python3 ./get-pip.py "pip>=25.0"
         rm ./get-pip.py
         # install certbot and nginx support
-        pip3 --root-user-action install certbot &>> "$LOG_FILE"
-        pip3 --root-user-action install certbot-nginx &>> "$LOG_FILE"
+        pip3 --root-user-action install $PIP_CERTBOT_PACKAGES &>> "$LOG_FILE"
     else 
-		$PM_COMMAND "${PM_INSTALL[@]}" certbot $CERTBOT_PACKAGE &>> "$LOG_FILE"
+		$PM_COMMAND "${PM_INSTALL[@]}" $CERTBOT_PACKAGES &>> "$LOG_FILE"
     fi	
 	
 	CERTBOT_IS_PRESENT=$(isPresent certbot)
 	if ! [ "$CERTBOT_IS_PRESENT" ]; then
-		wget -P /usr/local/bin https://dl.eff.org/certbot-auto &>> "$LOG_FILE"
-		chmod +x /usr/local/bin/certbot-auto
+		# Fall back to pip
+		if [ "$(isPresent pip3)" ]; then
+			echo "certbot not found in system repositories; installing via pip..."
+			pip3 install $PIP_CERTBOT_PACKAGES &>> "$LOG_FILE"
+		else
+			echo "certbot could not be installed automatically. Please install certbot manually to enable HTTPS. See https://certbot.eff.org/ for instructions."
+			setupnginx=n
+			return
+		fi
 	fi
 
 	$PM_COMMAND "${PM_INSTALL[@]}" nginx &>> "$LOG_FILE"
@@ -1194,7 +1201,7 @@ function installDependencies {
 	fi
 
 	if [ -n "$SKIP_INSTALL" ]; then
-		setupnginx=n;
+		setupnginx=n
 		return
 	fi	
 
@@ -1673,7 +1680,7 @@ echo -en "Instance Manager:\t\t"| tee -a $INSTALL_SUMMARY
 if [ "$AMPINSTMGR_IS_INSTALLED" ]; then echo "Already installed"; else echo "To be installed"; fi| tee -a $INSTALL_SUMMARY
 echo -en "HTTPS setup:\t\t\t"| tee -a $INSTALL_SUMMARY
 if [[ "$setupnginx" =~ ^[Yy]$ ]]; then echo "Yes, via nginx with domain $nginxdomain"; else echo "No"; fi| tee -a $INSTALL_SUMMARY
-noReason=$(([[ "$installPodman" =~ ^[Yy]$ ]] || [[ "$installDocker" =~ ^[Yy]$ ]]) && echo "Not required (running in containers)" || echo "No" )
+noReason=$( ([[ "$installPodman" =~ ^[Yy]$ ]] || [[ "$installDocker" =~ ^[Yy]$ ]]) && echo "Not required (running in containers)" || echo "No" )
 if [[ "$installPodman" =~ ^[Yy]$ ]]; then echo -e "Install Podman:\t\t\tYes";
 elif [[ "$installDocker" =~ ^[Yy]$ ]]; then echo -e "Install Docker:\t\t\tYes";
 else echo -e "Install Podman/Docker:\t\tNo"; fi | tee -a $INSTALL_SUMMARY
